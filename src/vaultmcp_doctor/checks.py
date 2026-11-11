@@ -220,6 +220,171 @@ def _discover_mcp_config(vault_path: Path, explicit: Path | None) -> Path | None
     return None
 
 
+def _load_servers(path: Path, vault_path: Path) -> dict[str, Any]:
+    """Return mcpServers from a Claude config file, including the vault's project entry in .claude.json."""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    servers = dict(raw.get("mcpServers") or {}) if isinstance(raw.get("mcpServers"), dict) else {}
+    projects = raw.get("projects")
+    if isinstance(projects, dict):
+        proj = projects.get(str(vault_path.resolve()))
+        if isinstance(proj, dict) and isinstance(proj.get("mcpServers"), dict):
+            servers.update(proj["mcpServers"])
+    return servers
+
+
+_PORT_RE = re.compile(r"(?:127\.0\.0\.1|localhost):(\d{2,5})")
+
+
+def _server_ports(srv: Any) -> set[int]:
+    """Ports a server points at: URL/args host:port, or OBSIDIAN_PORT (mcp-obsidian defaults to 27124)."""
+    if not isinstance(srv, dict):
+        return set()
+    ports = {int(p) for p in _PORT_RE.findall(json.dumps(srv))}
+    env = srv.get("env") if isinstance(srv.get("env"), dict) else {}
+    if str(env.get("OBSIDIAN_PORT", "")).isdigit():
+        ports.add(int(env["OBSIDIAN_PORT"]))
+    elif "mcp-obsidian" in json.dumps(srv) and not ports:
+        ports.add(27124)
+    return ports
+
+
+def check_scopes_and_port(
+    vault_path: Path,
+    mcp_config_path: Path | None = None,
+    env: Mapping[str, str] | None = None,
+    home: Path | None = None,
+) -> list[dict[str, str]]:
+    """Diff MCP servers across .claude.json / settings.json / .mcp.json, CLAUDE_CONFIG_DIR, and REST API port."""
+    active_env = os.environ if env is None else env
+    home_dir = Path.home() if home is None else home
+    config_dir = active_env.get("CLAUDE_CONFIG_DIR", "").strip()
+    findings: list[dict[str, str]] = []
+
+    # Claude Code keeps .claude.json in $HOME by default, inside CLAUDE_CONFIG_DIR when set.
+    if config_dir:
+        root = Path(config_dir).expanduser()
+        user_files = [root / ".claude.json", root / "settings.json"]
+    else:
+        user_files = [home_dir / ".claude.json", home_dir / ".claude" / "settings.json"]
+    candidates = user_files + [vault_path / ".mcp.json", vault_path / ".claude" / "settings.json"]
+    if mcp_config_path is not None:
+        candidates.append(mcp_config_path)
+
+    sources: dict[str, dict[str, Any]] = {}
+    for path in candidates:
+        if path.is_file() and str(path) not in sources:
+            servers = _load_servers(path, vault_path)
+            if servers:
+                sources[str(path)] = servers
+
+    by_name: dict[str, list[tuple[str, Any]]] = {}
+    for src, servers in sources.items():
+        for name, srv in servers.items():
+            by_name.setdefault(name, []).append((src, srv))
+    for name, entries in sorted(by_name.items()):
+        defs = {json.dumps(srv, sort_keys=True) for _, srv in entries}
+        if len(entries) > 1 and len(defs) > 1:
+            findings.append(
+                _finding(
+                    finding_id="SCOPE_DUPLICATE_SERVER",
+                    category="scopes_port",
+                    status="warn",
+                    severity="high",
+                    title=f"MCP server '{name}' is registered in {len(entries)} scopes with different settings",
+                    detail="Defined in: " + ", ".join(Path(s).name for s, _ in entries)
+                    + ". Claude Code picks one silently, so edits to the other file have no effect.",
+                    remediation=f"Run `claude mcp get {name}` to see the live entry, then delete the stale copy.",
+                    pain_ref="Pain #3",
+                )
+            )
+
+    if config_dir:
+        default_servers = _load_servers(home_dir / ".claude.json", vault_path)
+        missing = sorted(set(default_servers) - set(by_name))
+        if missing:
+            findings.append(
+                _finding(
+                    finding_id="SCOPE_PROFILE_MISMATCH",
+                    category="scopes_port",
+                    status="warn",
+                    severity="medium",
+                    title="CLAUDE_CONFIG_DIR hides servers registered in the default profile",
+                    detail=f"CLAUDE_CONFIG_DIR is set; these servers exist only in the default ~/.claude.json: {', '.join(missing[:5])}.",
+                    remediation="Unset CLAUDE_CONFIG_DIR or re-register the servers under the active profile with `claude mcp add`.",
+                    pain_ref="Pain #3",
+                )
+            )
+
+    obsidian_ports: set[int] = set()
+    for entries in by_name.values():
+        for _, srv in entries:
+            blob = json.dumps(srv).lower()
+            if "obsidian" in blob or "2712" in blob:
+                obsidian_ports |= _server_ports(srv)
+
+    plugin_cfg = vault_path / ".obsidian" / "plugins" / "obsidian-local-rest-api" / "data.json"
+    if obsidian_ports and plugin_cfg.is_file():
+        try:
+            data = json.loads(plugin_cfg.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        # Plugin defaults: HTTPS on 27124, HTTP on 27123 only when enableInsecureServer is true.
+        port, insecure = str(data.get("port", "")), str(data.get("insecurePort", ""))
+        live = {int(port) if port.isdigit() else 27124}
+        if data.get("enableInsecureServer"):
+            live.add(int(insecure) if insecure.isdigit() else 27123)
+        stale = sorted(obsidian_ports - live)
+        if stale:
+            findings.append(
+                _finding(
+                    finding_id="REST_PORT_MISMATCH",
+                    category="scopes_port",
+                    status="fail",
+                    severity="critical",
+                    title="MCP config points at a different port than Obsidian Local REST API",
+                    detail=f"MCP config uses port(s) {', '.join(map(str, stale))}; the plugin listens on {', '.join(map(str, sorted(live)))}. "
+                    "mcp-obsidian assumes 27124 unless OBSIDIAN_PORT is set, so a correct API key still gets connection refused.",
+                    remediation="Set OBSIDIAN_PORT in the server's env (or fix the URL) to match the plugin's port.",
+                    pain_ref="Pain #3",
+                )
+            )
+
+    if obsidian_ports:
+        findings.append(
+            _finding(
+                finding_id="OBSIDIAN_START_ORDER_HINT",
+                category="scopes_port",
+                status="pass",
+                severity="info",
+                title="Start Obsidian before launching claude",
+                detail="Claude Code fetches the MCP tool list once per session; if Obsidian opens later, the REST bridge exposes no tools.",
+                remediation="Open Obsidian first, or run /mcp reconnect or restart claude after opening it.",
+                pain_ref="Pain #3",
+            )
+        )
+    elif not findings:
+        findings.append(
+            _finding(
+                finding_id="SCOPES_CLEAN",
+                category="scopes_port",
+                status="pass",
+                severity="info",
+                title="No duplicate MCP registrations or profile mismatches found",
+                detail=f"Compared {len(sources)} config file(s).",
+                remediation="None required.",
+                pain_ref="Pain #3",
+            )
+        )
+    return findings
+
+
 def _has_path_case_mismatch(raw_path: str) -> str | None:
     if raw_path.startswith(("-", "http://", "https://")) or ("/" not in raw_path and "\\" not in raw_path):
         return None

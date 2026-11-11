@@ -39,6 +39,7 @@ PYTHONPATH=src python3 -m vaultmcp_doctor --vault /path/to/your/vault --json --o
 |---|---|---|
 | **Obsidian CLI 1.12 Preflight** | Silent exit-code-`0` errors (`base:views`), `properties format=json` YAML mismatch, `tasks todo total` silent `0`, and `content=` UTF-8 8 KB corruption | `warn` / `fail` |
 | **Transport, Timeouts & Paths** | Unenforced 10+ min stdio hangs (`MCP_TOOL_TIMEOUT`), fragile SSE / `mcp-remote` drops, Windows `npx` vs `npx.cmd`, missing binaries, WSL/Windows path casing mismatches, CRLF script endings | `warn` / `fail` |
+| **Scopes, Profiles & REST Port** | Same server registered in `.claude.json` and `settings.json` with different settings (one silently wins), `CLAUDE_CONFIG_DIR` profile hiding servers from the default `~/.claude.json`, MCP port vs `obsidian-local-rest-api` `data.json` port mismatch (`mcp-obsidian` assumes `27124`), start-Obsidian-before-`claude` hint | `pass` / `warn` / `fail` |
 | **Auth Env-Var Collisions** | Stale `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` shadowing Claude subscription auth; plaintext `.env` inside vault root (values always redacted) | `warn` / `fail` |
 | **Known MCP Bugs & Security** | `mcp-obsidian` open path traversal (`#150`), `mcp>=2.0` SDK startup crash (`#156`), `obsidian-local-rest-api` 5.x header & `If-Match` risks (`#166`, `#286`), archived `obsidian-mcp-tools` plugin, symlinks escaping vault root | `warn` / `fail` |
 | **Privacy & Context-Bloat Audit** | Missing `.vaultignore`, exposed `#private`/`#secret` or `private: true` notes, note token-count histogram (`<1k`, `1k-4k`, `4k-16k`, `>16k`), oversized notes, and MCP tool-schema token overhead | `warn` / `fail` |
@@ -107,7 +108,7 @@ Findings:
 | **Python** | `3.10`, `3.11`, `3.12`, `3.13` | 100% Python standard library; zero `pip` dependencies required |
 | **OS** | Linux, macOS, WSL2, Windows 11 | Works headless over SSH and in CI without Obsidian Desktop running |
 | **Obsidian** | Vaults on any version; CLI `1.12+` trap checks | Read-only vault scan; safe with Obsidian open or closed |
-| **Claude Code / MCP** | `.mcp.json` & `~/.claude.json` | Optional `--probe-sse` bounded at 2.0s timeout |
+| **Claude Code / MCP** | `.mcp.json`, `~/.claude.json`, `~/.claude/settings.json`, `$CLAUDE_CONFIG_DIR` | Optional `--probe-sse` bounded at 2.0s timeout |
 
 ---
 

@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import tempfile
@@ -221,6 +222,46 @@ class TestPrivacyAndContextBloat(unittest.TestCase):
 
         self.assertEqual([f["id"] for f in findings], ["PRIVACY_CONTEXT_CLEAN"])
         self.assertEqual(metrics["exposed_private_notes"], [])
+
+
+class TestScopesAndPortCheck(unittest.TestCase):
+    def _write(self, path: Path, data: dict) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data), encoding="utf-8")
+
+    def test_duplicate_scope_port_mismatch_and_start_hint(self):
+        from vaultmcp_doctor.checks import check_scopes_and_port
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home, vault = Path(tmp) / "home", Path(tmp) / "vault"
+            obs = {"command": "uvx", "args": ["mcp-obsidian"], "env": {"OBSIDIAN_API_KEY": "k"}}
+            self._write(home / ".claude.json", {"projects": {str(vault.resolve()): {"mcpServers": {"obsidian": obs}}}})
+            self._write(home / ".claude" / "settings.json", {"mcpServers": {"obsidian": {**obs, "env": {"OBSIDIAN_PORT": "27125"}}}})
+            self._write(vault / ".obsidian" / "plugins" / "obsidian-local-rest-api" / "data.json", {"port": 27125})
+            findings = check_scopes_and_port(vault, env={}, home=home)
+
+        by_id = {f["id"]: f for f in findings}
+        self.assertIn("SCOPE_DUPLICATE_SERVER", by_id)
+        self.assertIn(".claude.json", by_id["SCOPE_DUPLICATE_SERVER"]["detail"])
+        self.assertIn("settings.json", by_id["SCOPE_DUPLICATE_SERVER"]["detail"])
+        self.assertIn("27124", by_id["REST_PORT_MISMATCH"]["detail"])
+        self.assertIn("OBSIDIAN_START_ORDER_HINT", by_id)
+        self.assertNotIn('"k"', str(findings))
+
+    def test_claude_config_dir_profile_mismatch_and_clean(self):
+        from vaultmcp_doctor.checks import check_scopes_and_port
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home, vault, prof = Path(tmp) / "home", Path(tmp) / "vault", Path(tmp) / "work"
+            vault.mkdir()
+            self._write(home / ".claude.json", {"mcpServers": {"notes": {"command": "notes-mcp"}}})
+            self._write(prof / ".claude.json", {"mcpServers": {"other": {"command": "x"}}})
+            switched = check_scopes_and_port(vault, env={"CLAUDE_CONFIG_DIR": str(prof)}, home=home)
+            clean = check_scopes_and_port(vault, env={}, home=home)
+
+        self.assertEqual([f["id"] for f in switched], ["SCOPE_PROFILE_MISMATCH"])
+        self.assertIn("notes", switched[0]["detail"])
+        self.assertEqual([f["id"] for f in clean], ["SCOPES_CLEAN"])
 
 
 if __name__ == "__main__":
