@@ -4,6 +4,9 @@ Read-only `<10s` preflight & diagnostic CLI for **Obsidian + Claude Code + MCP**
 
 Zero external Python dependencies (100% stdlib), zero telemetry, never modifies your vault, and never echoes secret values.
 
+- Packaged ZIP release (`$0+` MIT): [Download VaultMCP Doctor on Gumroad](https://aditama1.gumroad.com/l/vaultmcp-doctor)
+- Full replacement MCP server & Ops Vault: [VaultMCP OS ($29 / $59 / $129)](https://aditama1.gumroad.com/l/vaultmcp-os) (use code `DOCTOR25` for 25% off Pro `$59` or Team `$129`)
+
 ---
 
 ## 1-Command Quickstart
@@ -44,6 +47,41 @@ PYTHONPATH=src python3 -m vaultmcp_doctor --vault /path/to/your/vault --json --o
 - `0`: Healthy (zero `fail` findings; add `--strict` to also fail on `warn`)
 - `1`: One or more `fail` findings detected (or `warn` with `--strict`)
 - `2`: Invalid CLI arguments or missing vault directory (never fails silently with `0`)
+
+---
+
+## Sample Output
+
+Captured from running `vaultmcp-doctor` on a sample vault with `.mcp.json` pointing at `mcp-obsidian` and an environment with `mcp==2.0.0` installed:
+
+```text
+$ PYTHONPATH=src python3 -m vaultmcp_doctor --vault ./obsidian-vault --mcp-config ./.mcp.json --no-color
+VaultMCP Doctor v1.0.0 - Vault: obsidian-vault (18.3 ms)
+Summary: 1 pass | 2 warn | 4 fail
+Vault Context: 2 notes (~17 tokens) | Buckets [<1k:2, 1k-4k:0, 4k-16k:0, >16k:0] | MCP Schema Overhead: ~850 tokens (1 server(s))
+
+Findings:
+  [FAIL] CLI_YAML_JSON_MISMATCH (Pain #1 / #8): Obsidian CLI properties format=json trap detected
+         Detail: Obsidian CLI 1.12 returns YAML even when `format=json` is passed, breaking JSON parsers silently. Matched in: CLAUDE.md.
+         Fix:    Parse YAML/stdout defensively for `Error:` lines and avoid trusting exit code 0 alone, or switch to a direct-filesystem atomic MCP server (VaultMCP Core $29).
+  [WARN] TRANSPORT_TIMEOUT_UNENFORCED (Pain #3): No bounded 10s per-tool MCP timeout configured
+         Detail: Claude Code ignores server startup timeouts on individual tool calls (claude-code#53641), risking 10+ minute hangs.
+         Fix:    Set MCP_TOOL_TIMEOUT=10000 and prefer a direct-filesystem MCP server with hard per-call deadlines.
+  [PASS] AUTH_ENV_CLEAN (Pain #9): No auth env-var shadowing or vault .env exposure detected
+         Detail: ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN are unset; no .env in vault root.
+  [FAIL] DEP_MCP_OBSIDIAN_PATH_TRAVERSAL (Pain #6): mcp-obsidian open path-traversal exposure (#150)
+         Detail: Detected mcp-obsidian (configured). Upstream concatenates filepath directly into /vault/{filepath}, allowing ../../ escapes across 7 tools.
+         Fix:    Replace mcp-obsidian with a realpath-jailed direct-disk MCP server (VaultMCP Core $29) or restrict filesystem permissions.
+  [FAIL] DEP_MCP_SDK_V2_CRASH (Pain #7): mcp==2.0.0 breaks legacy Python MCP servers (#156)
+         Detail: Python `mcp>=2.0` removed Server.list_tools signature compatibility, causing AttributeError startup crashes.
+         Fix:    Pin `mcp<2.0` in a dedicated virtualenv or upgrade to a zero-dependency/pinned MCP runtime.
+  [WARN] PRIVACY_MISSING_VAULTIGNORE (Pain #5): Missing .vaultignore privacy firewall in vault root
+         Detail: Without .vaultignore, naive MCP file/search tools index private journals, credentials, and drafts.
+         Fix:    Add a .vaultignore file excluding Private/, Secrets/, #private, and *.env.
+  [FAIL] PRIVACY_EXCLUDED_TAG_EXPOSED (Pain #5): Notes marked private/secret are not shielded by .vaultignore
+         Detail: Found 1 private/secret note(s) exposed to cold-start/full scans: SecretNote.md.
+         Fix:    List private paths and #private/#secret tags in .vaultignore and use a pre-read tag firewall (VaultMCP Core/Pro).
+```
 
 ---
 
@@ -89,14 +127,14 @@ python3 scripts/build_release.py
 
 ## Upgrade Path: Replacing Fragile Bridges
 
-`VaultMCP Doctor` (`$0+`, MIT) diagnoses setup, security, concurrency, and context-bloat traps. When you are ready to replace fragile community bridges with a deterministic runtime + ops vault:
+`VaultMCP Doctor` (`$0+`, MIT) diagnoses setup, security, concurrency, and context-bloat traps ([Gumroad release](https://aditama1.gumroad.com/l/vaultmcp-doctor)). When you are ready to replace fragile community bridges with a deterministic runtime and ops vault, compare [VaultMCP OS](https://aditama1.gumroad.com/l/vaultmcp-os) tiers (use code `DOCTOR25` at checkout for 25% off Pro `$59` or Team `$129`):
 
-| Tier | Price | What You Unlock |
+| Tier | Price | What Is Included |
 |---|---:|---|
-| **VaultMCP Doctor** | **$0+** | Read-only `<10s` diagnostic CLI + JSON audit + remediation guide (this package) |
-| **Starter / Core** | **$29** | Zero-Electron direct-filesystem MCP bridge, SHA-256 `If-Match` concurrency lock (`412 Conflict`), strict `realpath` jail + secret redactor, atomic UTF-8 writer, hard per-tool timeouts, token-budgeted snippet search |
-| **Pro (Recommended)** | **$59** | Everything in Starter/Core + pre-wired PARA Ops Vault, dynamic MCP tool-profile switcher, AST heading section chunker, git/snapshot rollback ledger, declarative tag firewall, tested `CLAUDE.md` + `SKILL.md` slash commands |
-| **Team / Studio** | **$129** | Everything in Pro + multi-vault isolated router, CI/pre-commit broken-wikilink & schema linter, team/agency SOP pack, 5-seat commercial license |
+| **[VaultMCP Doctor](https://aditama1.gumroad.com/l/vaultmcp-doctor)** | **$0+** | Read-only `<10s` diagnostic CLI + JSON audit + remediation guide (this package) |
+| **[Starter / Core](https://aditama1.gumroad.com/l/vaultmcp-os)** | **$29** | Zero-Electron direct-filesystem MCP bridge, SHA-256 `If-Match` concurrency lock (`412 Conflict`), strict `realpath` jail + secret redactor, atomic UTF-8 writer, hard per-tool timeouts, token-budgeted snippet search |
+| **[Pro (Recommended)](https://aditama1.gumroad.com/l/vaultmcp-os)** | **$59** | Everything in Starter/Core + pre-wired PARA Ops Vault, dynamic MCP tool-profile switcher, AST heading section chunker, git/snapshot rollback ledger, declarative tag firewall, tested `CLAUDE.md` + `SKILL.md` slash commands (`$44.25` with `DOCTOR25`) |
+| **[Team / Studio](https://aditama1.gumroad.com/l/vaultmcp-os)** | **$129** | Everything in Pro + multi-vault isolated router, CI/pre-commit broken-wikilink & schema linter, team/agency SOP pack, 5-seat commercial license (`$96.75` with `DOCTOR25`) |
 
 ---
 
