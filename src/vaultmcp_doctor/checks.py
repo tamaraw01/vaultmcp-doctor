@@ -138,11 +138,47 @@ def _finding(
     }
 
 
+_EMPTY_BEARER_RE = re.compile(
+    r"^\s*Bearer(?:\s+\$\{[A-Za-z_][A-Za-z0-9_]*:-\})?\s*$",
+    re.IGNORECASE,
+)
+_GHO_TOKEN_RE = re.compile(r"\bgho_[A-Za-z0-9_]+\b")
+
+
+def _collect_mcp_sources(
+    vault_path: Path,
+    mcp_config_path: Path | None,
+    active_env: Mapping[str, str],
+    home_dir: Path,
+) -> dict[str, dict[str, Any]]:
+    config_dir = active_env.get("CLAUDE_CONFIG_DIR", "").strip()
+    if config_dir:
+        root = Path(config_dir).expanduser()
+        user_files = [root / ".claude.json", root / "settings.json"]
+    else:
+        user_files = [home_dir / ".claude.json", home_dir / ".claude" / "settings.json"]
+    candidates = user_files + [vault_path / ".mcp.json", vault_path / ".claude" / "settings.json"]
+    if mcp_config_path is not None:
+        candidates.append(mcp_config_path)
+
+    sources: dict[str, dict[str, Any]] = {}
+    for path in candidates:
+        if path.is_file() and str(path) not in sources:
+            servers = _load_servers(path, vault_path)
+            if servers:
+                sources[str(path)] = servers
+    return sources
+
+
 def check_auth_env(
-    vault_path: Path, env: Mapping[str, str] | None = None
+    vault_path: Path,
+    env: Mapping[str, str] | None = None,
+    mcp_config_path: Path | None = None,
+    home: Path | None = None,
 ) -> list[dict[str, str]]:
-    """Check stale ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN shadowing subscription auth."""
+    """Check auth env shadowing, vault .env exposure, empty HTTP Bearer headers, and gho_ token mismatches."""
     active_env = os.environ if env is None else env
+    home_dir = Path.home() if home is None else home
     findings: list[dict[str, str]] = []
 
     api_key = active_env.get("ANTHROPIC_API_KEY", "").strip()
@@ -189,6 +225,72 @@ def check_auth_env(
                 detail=f"Found {env_file.name} in vault root. Synced vaults and unguarded MCP readers can expose secrets.",
                 remediation="Move .env outside the vault and add `.env` + `*.env` to `.vaultignore`.",
                 pain_ref="Pain #6 / #9",
+            )
+        )
+
+    sources = _collect_mcp_sources(vault_path, mcp_config_path, active_env, home_dir)
+    empty_bearer_servers: list[str] = []
+    gho_mismatch_servers: list[str] = []
+    env_has_gho = any(
+        active_env.get(k, "").strip().startswith("gho_")
+        for k in ("GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_TOKEN", "GH_TOKEN")
+    )
+
+    for src, servers in sources.items():
+        src_name = Path(src).name
+        for srv_name, srv in servers.items():
+            if not isinstance(srv, dict):
+                continue
+            srv_type = str(srv.get("type", "")).strip().lower()
+            headers = srv.get("headers")
+            if srv_type == "http" and isinstance(headers, dict):
+                for hk, hv in headers.items():
+                    if str(hk).lower() == "authorization" and isinstance(hv, str) and _EMPTY_BEARER_RE.match(hv):
+                        empty_bearer_servers.append(f"{srv_name} ({src_name})")
+                        break
+
+            srv_blob = json.dumps(srv)
+            is_github = "github" in srv_name.lower() or "github" in srv_blob.lower()
+            if is_github:
+                auth_blob = json.dumps(
+                    {"env": srv.get("env"), "headers": headers, "args": srv.get("args")}
+                )
+                if _GHO_TOKEN_RE.search(auth_blob) or env_has_gho:
+                    gho_mismatch_servers.append(f"{srv_name} ({src_name})")
+
+    if empty_bearer_servers:
+        findings.append(
+            _finding(
+                finding_id="AUTH_EMPTY_BEARER_HEADER",
+                category="auth_env",
+                status="fail",
+                severity="high",
+                title="HTTP MCP server has empty Bearer Authorization header (blocks OAuth fallback)",
+                detail=(
+                    "Server(s) with type='http' set Authorization to an empty Bearer or '${VAR:-}' value: "
+                    + ", ".join(sorted(set(empty_bearer_servers)))
+                    + ". Claude Code disables OAuth fallback whenever headers.Authorization is present, causing HTTP 401 (claude-code#69758)."
+                ),
+                remediation="Remove headers.Authorization when using OAuth, or set a non-empty token or headersHelper command.",
+                pain_ref="Pain #9",
+            )
+        )
+
+    if gho_mismatch_servers:
+        findings.append(
+            _finding(
+                finding_id="AUTH_GITHUB_TOKEN_PREFIX_MISMATCH",
+                category="auth_env",
+                status="fail",
+                severity="high",
+                title="GitHub MCP server configured with gho_ OAuth token instead of ghp_ / github_pat_ PAT",
+                detail=(
+                    "Detected gho_ OAuth token for GitHub MCP server(s): "
+                    + ", ".join(sorted(set(gho_mismatch_servers)))
+                    + " (value redacted). GitHub MCP servers expect a personal access token (ghp_ or github_pat_), so gh CLI OAuth tokens fail auth (claude-code#19281)."
+                ),
+                remediation="Create a classic PAT (ghp_) or fine-grained PAT (github_pat_) with required scopes and set it in GITHUB_PERSONAL_ACCESS_TOKEN.",
+                pain_ref="Pain #9",
             )
         )
 
@@ -264,23 +366,7 @@ def check_scopes_and_port(
     home_dir = Path.home() if home is None else home
     config_dir = active_env.get("CLAUDE_CONFIG_DIR", "").strip()
     findings: list[dict[str, str]] = []
-
-    # Claude Code keeps .claude.json in $HOME by default, inside CLAUDE_CONFIG_DIR when set.
-    if config_dir:
-        root = Path(config_dir).expanduser()
-        user_files = [root / ".claude.json", root / "settings.json"]
-    else:
-        user_files = [home_dir / ".claude.json", home_dir / ".claude" / "settings.json"]
-    candidates = user_files + [vault_path / ".mcp.json", vault_path / ".claude" / "settings.json"]
-    if mcp_config_path is not None:
-        candidates.append(mcp_config_path)
-
-    sources: dict[str, dict[str, Any]] = {}
-    for path in candidates:
-        if path.is_file() and str(path) not in sources:
-            servers = _load_servers(path, vault_path)
-            if servers:
-                sources[str(path)] = servers
+    sources = _collect_mcp_sources(vault_path, mcp_config_path, active_env, home_dir)
 
     by_name: dict[str, list[tuple[str, Any]]] = {}
     for src, servers in sources.items():

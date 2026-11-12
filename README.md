@@ -11,7 +11,15 @@ Zero external Python dependencies (100% stdlib), zero telemetry, never modifies 
 
 ## 1-Command Quickstart
 
-### macOS / Linux / WSL
+Requires Python 3.10+. This tool is not on PyPI or npm, so install directly from the GitHub release tag:
+
+```bash
+pipx install git+https://github.com/tamaraw01/vaultmcp-doctor@v1.0.0
+# or, inside a virtualenv:
+pip install git+https://github.com/tamaraw01/vaultmcp-doctor@v1.0.0
+```
+
+### macOS / Linux / WSL (from extracted ZIP or clone)
 ```bash
 bash install.sh /path/to/your/obsidian-vault
 ```
@@ -40,7 +48,7 @@ PYTHONPATH=src python3 -m vaultmcp_doctor --vault /path/to/your/vault --json --o
 | **Obsidian CLI 1.12 Preflight** | Silent exit-code-`0` errors (`base:views`), `properties format=json` YAML mismatch, `tasks todo total` silent `0`, and `content=` UTF-8 8 KB corruption | `warn` / `fail` |
 | **Transport, Timeouts & Paths** | Unenforced 10+ min stdio hangs (`MCP_TOOL_TIMEOUT`), fragile SSE / `mcp-remote` drops, Windows `npx` vs `npx.cmd`, missing binaries, WSL/Windows path casing mismatches, CRLF script endings | `warn` / `fail` |
 | **Scopes, Profiles & REST Port** | Same server registered in `.claude.json` and `settings.json` with different settings (one silently wins), `CLAUDE_CONFIG_DIR` profile hiding servers from the default `~/.claude.json`, MCP port vs `obsidian-local-rest-api` `data.json` port mismatch (`mcp-obsidian` assumes `27124`), start-Obsidian-before-`claude` hint | `pass` / `warn` / `fail` |
-| **Auth Env-Var Collisions** | Stale `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` shadowing Claude subscription auth; plaintext `.env` inside vault root (values always redacted) | `warn` / `fail` |
+| **Auth & Token Config** | Stale `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` shadowing Claude subscription auth; plaintext `.env` inside vault root; empty `headers.Authorization` (`Bearer ` / `Bearer ${VAR:-}`) on `type: http` MCP servers blocking OAuth fallback (`claude-code#69758`); `gho_` OAuth tokens configured for GitHub MCP servers expecting `ghp_` / `github_pat_` PATs (`claude-code#19281`); values always redacted | `warn` / `fail` |
 | **Known MCP Bugs & Security** | `mcp-obsidian` open path traversal (`#150`), `mcp>=2.0` SDK startup crash (`#156`), `obsidian-local-rest-api` 5.x header & `If-Match` risks (`#166`, `#286`), archived `obsidian-mcp-tools` plugin, symlinks escaping vault root | `warn` / `fail` |
 | **Privacy & Context-Bloat Audit** | Missing `.vaultignore`, exposed `#private`/`#secret` or `private: true` notes, note token-count histogram (`<1k`, `1k-4k`, `4k-16k`, `>16k`), oversized notes, and MCP tool-schema token overhead | `warn` / `fail` |
 
@@ -114,7 +122,7 @@ Findings:
 
 ## Self-Tests & Reproducible Packaging
 
-Run the automated test suite:
+Run the automated test suite (20 unit tests):
 ```bash
 python3 -m unittest discover -s tests -v
 ```

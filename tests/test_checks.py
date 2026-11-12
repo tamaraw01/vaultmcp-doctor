@@ -39,6 +39,116 @@ class TestAuthEnvCheck(unittest.TestCase):
         self.assertEqual(findings[0]["status"], "pass")
         self.assertEqual(findings[0]["id"], "AUTH_ENV_CLEAN")
 
+    def test_detects_empty_bearer_header_on_http_mcp_server(self):
+        from vaultmcp_doctor.checks import check_auth_env
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home, vault = Path(tmp) / "home", Path(tmp) / "vault"
+            vault.mkdir()
+            (vault / ".mcp.json").write_text(
+                json.dumps(
+                    {
+                        "mcpServers": {
+                            "remote-a": {
+                                "type": "http",
+                                "url": "https://mcp.example.com/mcp",
+                                "headers": {"Authorization": "Bearer ${MCP_API_TOKEN:-}"},
+                            },
+                            "remote-b": {
+                                "type": "http",
+                                "url": "https://mcp2.example.com/mcp",
+                                "headers": {"authorization": "Bearer "},
+                            },
+                            "remote-ok": {
+                                "type": "http",
+                                "url": "https://mcp3.example.com/mcp",
+                                "headers": {"Authorization": "Bearer ${VALID_TOKEN}"},
+                            },
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            findings = check_auth_env(vault, env={}, home=home)
+
+        by_id = {f["id"]: f for f in findings}
+        self.assertIn("AUTH_EMPTY_BEARER_HEADER", by_id)
+        f = by_id["AUTH_EMPTY_BEARER_HEADER"]
+        self.assertEqual(f["status"], "fail")
+        self.assertIn("remote-a", f["detail"])
+        self.assertIn("remote-b", f["detail"])
+        self.assertNotIn("remote-ok", f["detail"])
+
+    def test_detects_github_gho_token_prefix_mismatch_and_allows_ghp(self):
+        from vaultmcp_doctor.checks import check_auth_env
+
+        fake_gho = "gho_FAKEOAUTHTOKEN1234567890"
+        fake_ghp = "ghp_FAKEPATTOKEN1234567890"
+        with tempfile.TemporaryDirectory() as tmp:
+            home, vault = Path(tmp) / "home", Path(tmp) / "vault"
+            settings = vault / ".claude" / "settings.json"
+            settings.parent.mkdir(parents=True)
+            settings.write_text(
+                json.dumps(
+                    {
+                        "mcpServers": {
+                            "github": {
+                                "command": "npx",
+                                "args": ["-y", "@modelcontextprotocol/server-github"],
+                                "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": fake_gho},
+                            },
+                            "github-ok": {
+                                "command": "npx",
+                                "args": ["-y", "@modelcontextprotocol/server-github"],
+                                "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": fake_ghp},
+                            },
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            findings = check_auth_env(vault, env={}, home=home)
+
+        by_id = {f["id"]: f for f in findings}
+        self.assertIn("AUTH_GITHUB_TOKEN_PREFIX_MISMATCH", by_id)
+        f = by_id["AUTH_GITHUB_TOKEN_PREFIX_MISMATCH"]
+        self.assertEqual(f["status"], "fail")
+        self.assertIn("github", f["detail"])
+        self.assertNotIn("github-ok", f["detail"])
+        self.assertNotIn(fake_gho, str(findings))
+
+    def test_detects_github_gho_token_from_env_when_github_server_configured(self):
+        from vaultmcp_doctor.checks import check_auth_env
+
+        fake_gho = "gho_ENVOAUTHTOKEN9876543210"
+        with tempfile.TemporaryDirectory() as tmp:
+            home, vault = Path(tmp) / "home", Path(tmp) / "vault"
+            vault.mkdir()
+            (vault / ".mcp.json").write_text(
+                json.dumps(
+                    {
+                        "mcpServers": {
+                            "github": {
+                                "type": "http",
+                                "url": "https://api.githubcopilot.com/mcp/",
+                                "headers": {"Authorization": "Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}"},
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            findings = check_auth_env(
+                vault,
+                env={"GITHUB_PERSONAL_ACCESS_TOKEN": fake_gho},
+                home=home,
+            )
+
+        ids = {f["id"] for f in findings}
+        self.assertIn("AUTH_GITHUB_TOKEN_PREFIX_MISMATCH", ids)
+        self.assertNotIn("AUTH_EMPTY_BEARER_HEADER", ids)
+        self.assertNotIn(fake_gho, str(findings))
+
 
 class TestCliPreflightCheck(unittest.TestCase):
     def test_flags_silent_cli_traps_in_scripts_and_skills(self):

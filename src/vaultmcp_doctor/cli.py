@@ -53,7 +53,7 @@ def run_audit(
         )
     )
     findings.extend(check_scopes_and_port(vault_path, mcp_config_path=mcp_config_path))
-    findings.extend(check_auth_env(vault_path))
+    findings.extend(check_auth_env(vault_path, mcp_config_path=mcp_config_path))
     findings.extend(check_mcp_dependencies(vault_path, mcp_config_path=mcp_config_path))
     privacy_findings, metrics = check_privacy_and_bloat(
         vault_path, mcp_config_path=mcp_config_path
